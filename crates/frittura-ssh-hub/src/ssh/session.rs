@@ -231,6 +231,14 @@ async fn run_lobby(args: LobbyArgs<'_>) -> LobbyOutcome {
         }
     }
 
+    // If the user quit (Esc or idle-kick), the session is over - flush the
+    // alt-screen-cleanup bytes and close the SSH channel atomically so the
+    // user's terminal returns to normal and the ssh client disconnects.
+    // Selection-into-bridge and AuthRejected-re-entry paths must leave the
+    // channel open instead.
+    if quit && selected.is_none() {
+        tui.close_channel_on_drop();
+    }
     drop(tui);
 
     LobbyOutcome {

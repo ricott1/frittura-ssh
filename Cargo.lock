@@ -1031,7 +1031,6 @@ dependencies = [
  "crossterm",
  "log",
  "rand 0.10.1",
- "ratatui",
  "russh",
  "tokio",
 ]

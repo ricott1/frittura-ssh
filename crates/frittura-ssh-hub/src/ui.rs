@@ -1,6 +1,6 @@
 use crate::config::GameMetadata;
 use ratatui::{
-    layout::{Alignment, Constraint, Layout},
+    layout::{Constraint, Layout, Margin},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Clear, Paragraph},
@@ -19,53 +19,45 @@ pub fn render_lobby_menu(
     frame.render_widget(Clear, area);
 
     let chunks = Layout::vertical([
-        Constraint::Length(1), // top pad
         Constraint::Length(1), // title
         Constraint::Length(1), // pad
         Constraint::Length(1), // username
         Constraint::Length(1), // pad
         Constraint::Length(1), // flash banner (empty unless set)
-        Constraint::Length(1), // pad
-        Constraint::Length(1), // hint header
-        Constraint::Length(1), // pad
+        Constraint::Length(2), // pad
         Constraint::Min(3),    // game list
         Constraint::Length(1), // pad
         Constraint::Length(1), // kick warning (empty unless within window)
         Constraint::Length(1), // pad
         Constraint::Length(1), // controls hint
     ])
-    .split(area);
-
-    let centered = |line: Line<'static>| Paragraph::new(line).alignment(Alignment::Center);
+    .split(area.inner(Margin::new(2, 1)));
 
     frame.render_widget(
-        centered(Line::styled(
-            "sshhub",
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
-        )),
-        chunks[1],
+        Line::styled(
+            "Frittura ssHub",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )
+        .centered(),
+        chunks[0],
     );
-    frame.render_widget(centered(Line::from(username.to_string())), chunks[3]);
+    frame.render_widget(
+        Line::from(format!("Hello {}!", username)).centered(),
+        chunks[2],
+    );
 
     if let Some(msg) = flash {
         frame.render_widget(
-            centered(Line::styled(
+            Line::styled(
                 msg.to_string(),
-                Style::default()
-                    .fg(Color::Red)
-                    .add_modifier(Modifier::BOLD),
-            )),
-            chunks[5],
+                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+            )
+            .centered(),
+            chunks[4],
         );
     }
-
-    frame.render_widget(
-        centered(Line::styled(
-            "Pick a game:",
-            Style::default().add_modifier(Modifier::BOLD),
-        )),
-        chunks[7],
-    );
 
     let list_lines: Vec<Line<'static>> = if games.is_empty() {
         vec![Line::styled(
@@ -79,40 +71,41 @@ pub fn render_lobby_menu(
             .map(|(i, g)| render_game_line(i, g, i == selected_idx))
             .collect()
     };
-    frame.render_widget(
-        Paragraph::new(list_lines).alignment(Alignment::Center),
-        chunks[9],
-    );
+    frame.render_widget(Paragraph::new(list_lines), chunks[6]);
 
     if let Some(secs) = kick_warning_secs {
         frame.render_widget(
-            centered(Line::styled(
+            Line::styled(
                 format!("idle - kicking in {secs}s, press any key"),
-                Style::default()
-                    .fg(Color::Red)
-                    .add_modifier(Modifier::BOLD),
-            )),
-            chunks[11],
+                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+            )
+            .centered(),
+            chunks[8],
         );
     }
 
     frame.render_widget(
-        centered(Line::styled(
+        Line::styled(
             "↑/↓ or j/k: move    Enter: connect    Esc: leave",
             Style::default().fg(Color::DarkGray),
-        )),
-        chunks[13],
+        )
+        .centered(),
+        chunks[10],
     );
 }
 
 fn render_game_line(idx: usize, game: &GameMetadata, selected: bool) -> Line<'static> {
     let prefix = format!("{}. ", idx + 1);
-    let name = game.name.clone();
+    let name = format!("{:<12}", game.name);
     let desc = format!("  -  {}", game.description);
     let (style_prefix, style_name, style_desc) = if selected {
         (
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
             Style::default().fg(Color::Gray),
         )
     } else {
