@@ -1,5 +1,5 @@
 use crate::config::GameMetadata;
-use crate::ssh::SSHWriterProxy;
+use crate::core::SSHWriterProxy;
 use crate::ui;
 use crate::AppResult;
 use crossterm::cursor::{Hide, Show};
@@ -50,10 +50,11 @@ impl Tui {
         games: &[GameMetadata],
         selected_idx: usize,
         kick_warning_secs: Option<u32>,
+        flash: Option<&str>,
     ) -> AppResult<()> {
         let username = &self.username;
         self.terminal.draw(|frame| {
-            ui::render_lobby_menu(frame, username, games, selected_idx, kick_warning_secs)
+            ui::render_lobby_menu(frame, username, games, selected_idx, kick_warning_secs, flash)
         })?;
         Ok(())
     }

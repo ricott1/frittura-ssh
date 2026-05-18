@@ -10,8 +10,6 @@ pub struct GameMetadata {
     pub description: String,
     pub host: String,
     pub port: u16,
-    pub screen_size: (u16, u16),
-    pub inactivity_secs: u64,
 }
 
 #[derive(Debug, Deserialize)]

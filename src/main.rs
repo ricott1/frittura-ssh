@@ -6,7 +6,10 @@ use log4rs::{
     encode::pattern::PatternEncoder,
     Config,
 };
-use sshhub::{config, ssh::AppServer, store_path, AppResult};
+use std::sync::Arc;
+use sshhub::core::run_server;
+use sshhub::ssh::HubGame;
+use sshhub::{config, store_path, AppResult};
 
 const DEFAULT_PORT: u16 = 2222;
 const DEFAULT_GAMES_PATH: &str = "games.toml";
@@ -38,10 +41,12 @@ async fn main() -> AppResult<()> {
     let port = args.port.unwrap_or(DEFAULT_PORT);
     let games_path = args.games.as_deref().unwrap_or(DEFAULT_GAMES_PATH);
     let games = config::load_games(games_path)?;
-    log::info!("Loaded {} games from {}", games.len(), games_path);
+    log::info!(
+        "Loaded {} games from {games_path}. Starting hub on port {port}.",
+        games.len()
+    );
 
-    let mut server = AppServer::new(port, games);
-    server.run().await?;
-
+    let hub = Arc::new(HubGame::new(games));
+    run_server(hub, port).await?;
     Ok(())
 }

@@ -13,6 +13,7 @@ pub fn render_lobby_menu(
     games: &[GameMetadata],
     selected_idx: usize,
     kick_warning_secs: Option<u32>,
+    flash: Option<&str>,
 ) {
     let area = frame.area();
     frame.render_widget(Clear, area);
@@ -22,6 +23,8 @@ pub fn render_lobby_menu(
         Constraint::Length(1), // title
         Constraint::Length(1), // pad
         Constraint::Length(1), // username
+        Constraint::Length(1), // pad
+        Constraint::Length(1), // flash banner (empty unless set)
         Constraint::Length(1), // pad
         Constraint::Length(1), // hint header
         Constraint::Length(1), // pad
@@ -43,12 +46,25 @@ pub fn render_lobby_menu(
         chunks[1],
     );
     frame.render_widget(centered(Line::from(username.to_string())), chunks[3]);
+
+    if let Some(msg) = flash {
+        frame.render_widget(
+            centered(Line::styled(
+                msg.to_string(),
+                Style::default()
+                    .fg(Color::Red)
+                    .add_modifier(Modifier::BOLD),
+            )),
+            chunks[5],
+        );
+    }
+
     frame.render_widget(
         centered(Line::styled(
             "Pick a game:",
             Style::default().add_modifier(Modifier::BOLD),
         )),
-        chunks[5],
+        chunks[7],
     );
 
     let list_lines: Vec<Line<'static>> = if games.is_empty() {
@@ -65,7 +81,7 @@ pub fn render_lobby_menu(
     };
     frame.render_widget(
         Paragraph::new(list_lines).alignment(Alignment::Center),
-        chunks[7],
+        chunks[9],
     );
 
     if let Some(secs) = kick_warning_secs {
@@ -76,7 +92,7 @@ pub fn render_lobby_menu(
                     .fg(Color::Red)
                     .add_modifier(Modifier::BOLD),
             )),
-            chunks[9],
+            chunks[11],
         );
     }
 
@@ -85,7 +101,7 @@ pub fn render_lobby_menu(
             "↑/↓ or j/k: move    Enter: connect    Esc: leave",
             Style::default().fg(Color::DarkGray),
         )),
-        chunks[11],
+        chunks[13],
     );
 }
 

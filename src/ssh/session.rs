@@ -1,95 +1,127 @@
 use crate::config::GameMetadata;
-use crate::ssh::bridge;
-use crate::ssh::utils::convert_data_to_terminal_event;
-use crate::ssh::SSHWriterProxy;
-use crate::ssh::UserCredential;
+use crate::core::{
+    convert_data_to_terminal_event, kick_warning_secs, Credential, SSHWriterProxy, SshSession,
+    TerminalEvent,
+};
+use crate::ssh::bridge::{self, BridgeError};
 use crate::tui::Tui;
-use crate::AppResult;
-use crate::TerminalEvent;
 use crossterm::event::KeyCode;
-use russh::server::Handle;
-use russh::ChannelId;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use tokio::time::{self, MissedTickBehavior};
 
-/// All the per-session state we hand to the spawned task.
-pub struct SessionInbound {
-    pub channel_id: ChannelId,
-    pub handle: Handle,
-    pub username: String,
-    pub credential: UserCredential,
-    pub games: Arc<Vec<GameMetadata>>,
-    pub term: String,
-    pub initial_width: u32,
-    pub initial_height: u32,
-    pub data_rx: mpsc::Receiver<Vec<u8>>,
-    pub resize_rx: mpsc::Receiver<(u32, u32)>,
-}
-
 const DRAW_TIME_STEP: Duration = Duration::from_millis(1000 / 30);
+const HUB_LOBBY_IDLE: Duration = Duration::from_secs(60);
+const KICK_WARNING_REMAINING: Duration = Duration::from_secs(10);
 
-pub fn spawn_session(inbound: SessionInbound) {
-    tokio::spawn(async move {
-        if let Err(e) = run_session(inbound).await {
-            log::error!("Session task error: {e}");
-        }
-    });
-}
+pub async fn run_hub_session(games: Arc<Vec<GameMetadata>>, session: SshSession<Credential>) {
+    let SshSession {
+        username,
+        auth: credential,
+        term,
+        writer,
+        channel_id,
+        handle,
+        initial_size,
+        mut data_rx,
+        mut resize_rx,
+    } = session;
 
-async fn run_session(mut inbound: SessionInbound) -> AppResult<()> {
-    log::info!(
-        "Session opened: user={} channel={}",
-        inbound.username,
-        inbound.channel_id
-    );
+    log::info!("Session opened: user={username} channel={channel_id}");
 
-    let SelectionOutcome { selected, mut data_rx, mut resize_rx, current_width, current_height } =
-        run_lobby(&mut inbound).await?;
+    let mut writer = Some(writer);
+    let mut flash: Option<String> = None;
 
-    let Some(game) = selected else {
-        log::info!("User {} left the hub", inbound.username);
-        let _ = inbound.handle.close(inbound.channel_id).await;
-        return Ok(());
-    };
+    loop {
+        // The writer is consumed by the Tui inside run_lobby and dropped on
+        // exit. For re-entry after a recoverable bridge failure, we make a
+        // fresh writer from the still-live handle + channel_id.
+        let lobby_writer = writer
+            .take()
+            .unwrap_or_else(|| SSHWriterProxy::new(channel_id, handle.clone()));
 
-    log::info!(
-        "User {} selected '{}' -> bridging to {}:{}",
-        inbound.username,
-        game.key,
-        game.host,
-        game.port
-    );
+        let LobbyOutcome {
+            selected,
+            data_rx: rx1,
+            resize_rx: rx2,
+            current_width,
+            current_height,
+        } = run_lobby(LobbyArgs {
+            games: &games,
+            username: username.clone(),
+            writer: lobby_writer,
+            initial_size,
+            data_rx,
+            resize_rx,
+            flash: flash.take(),
+        })
+        .await;
+        data_rx = rx1;
+        resize_rx = rx2;
 
-    let bridge_result = bridge::run(bridge::BridgeArgs {
-        channel_id: inbound.channel_id,
-        handle: inbound.handle.clone(),
-        username: inbound.username.clone(),
-        credential: inbound.credential.as_str().to_string(),
-        game: game.clone(),
-        term: inbound.term,
-        width: current_width,
-        height: current_height,
-        data_rx: &mut data_rx,
-        resize_rx: &mut resize_rx,
-    })
-    .await;
+        let Some(game) = selected else {
+            log::info!("User {username} left the hub");
+            break;
+        };
 
-    if let Err(e) = bridge_result {
-        log::warn!(
-            "Bridge to {} ({}:{}) ended with error: {e}",
+        log::info!(
+            "User {username} selected '{}' -> bridging to {}:{}",
             game.key,
             game.host,
             game.port
         );
+
+        let bridge_result = bridge::run(bridge::BridgeArgs {
+            channel_id,
+            handle: handle.clone(),
+            username: username.clone(),
+            credential: credential.clone(),
+            game: game.clone(),
+            term: term.clone(),
+            width: current_width,
+            height: current_height,
+            data_rx: &mut data_rx,
+            resize_rx: &mut resize_rx,
+        })
+        .await;
+
+        match bridge_result {
+            Ok(()) => break,
+            Err(BridgeError::AuthRejected) => {
+                log::info!("Outbound auth rejected by {}", game.key);
+                flash = Some(format!(
+                    "could not connect to {}: authentication rejected",
+                    game.key
+                ));
+                // Loop continues - re-enter the lobby with the flash text.
+            }
+            Err(BridgeError::Other(e)) => {
+                log::warn!(
+                    "Bridge to {} ({}:{}) ended with error: {e}",
+                    game.key,
+                    game.host,
+                    game.port
+                );
+                break;
+            }
+        }
     }
 
-    let _ = inbound.handle.close(inbound.channel_id).await;
-    Ok(())
+    let _ = handle.close(channel_id).await;
 }
 
-struct SelectionOutcome {
+struct LobbyArgs<'a> {
+    games: &'a Arc<Vec<GameMetadata>>,
+    username: String,
+    writer: SSHWriterProxy,
+    initial_size: (u32, u32),
+    data_rx: mpsc::Receiver<Vec<u8>>,
+    resize_rx: mpsc::Receiver<(u32, u32)>,
+    flash: Option<String>,
+}
+
+struct LobbyOutcome {
     selected: Option<GameMetadata>,
     data_rx: mpsc::Receiver<Vec<u8>>,
     resize_rx: mpsc::Receiver<(u32, u32)>,
@@ -97,23 +129,36 @@ struct SelectionOutcome {
     current_height: u32,
 }
 
-/// Drive the lobby TUI until the user picks a game (returns `Some`) or quits
-/// (returns `None`). Owns the `Tui` so it gets dropped (alt-screen cleanup)
-/// before the caller transitions to the bridge.
-async fn run_lobby(inbound: &mut SessionInbound) -> AppResult<SelectionOutcome> {
-    let writer = SSHWriterProxy::new(inbound.channel_id, inbound.handle.clone());
-    let mut tui = Tui::new(inbound.username.clone(), writer)?;
+async fn run_lobby(args: LobbyArgs<'_>) -> LobbyOutcome {
+    let LobbyArgs {
+        games,
+        username,
+        writer,
+        initial_size,
+        mut data_rx,
+        mut resize_rx,
+        mut flash,
+    } = args;
 
-    let mut data_rx = std::mem::replace(&mut inbound.data_rx, mpsc::channel(1).1);
-    let mut resize_rx = std::mem::replace(&mut inbound.resize_rx, mpsc::channel(1).1);
+    let mut tui = match Tui::new(username.clone(), writer) {
+        Ok(t) => t,
+        Err(e) => {
+            log::error!("Tui init failed for {username}: {e}");
+            return LobbyOutcome {
+                selected: None,
+                data_rx,
+                resize_rx,
+                current_width: initial_size.0,
+                current_height: initial_size.1,
+            };
+        }
+    };
 
     let mut selected_idx: usize = 0;
     let mut dirty = true;
     let mut last_input_at = Instant::now();
-    let kick_after = compute_lobby_kick(&inbound.games);
-
-    let mut current_width = inbound.initial_width;
-    let mut current_height = inbound.initial_height;
+    let mut current_width = initial_size.0;
+    let mut current_height = initial_size.1;
 
     let mut draw_ticker = time::interval(DRAW_TIME_STEP);
     draw_ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
@@ -121,21 +166,23 @@ async fn run_lobby(inbound: &mut SessionInbound) -> AppResult<SelectionOutcome> 
     let mut selected: Option<GameMetadata> = None;
     let mut quit = false;
 
-    loop {
-        if quit || selected.is_some() {
-            break;
-        }
+    while !quit && selected.is_none() {
         tokio::select! {
             biased;
             data = data_rx.recv() => {
-                let Some(data) = data else { quit = true; continue; };
+                let Some(data) = data else { break; };
                 let Some(event) = convert_data_to_terminal_event(&data) else { continue; };
                 last_input_at = Instant::now();
+                // Any keypress clears the flash banner.
+                if flash.is_some() {
+                    flash = None;
+                    dirty = true;
+                }
                 match event {
                     TerminalEvent::Key(key) => {
-                        let n = inbound.games.len().max(1);
+                        let n = games.len().max(1);
                         match key.code {
-                            KeyCode::Esc => { quit = true; }
+                            KeyCode::Esc => quit = true,
                             KeyCode::Up | KeyCode::Char('k') => {
                                 selected_idx = (selected_idx + n - 1) % n;
                                 dirty = true;
@@ -145,39 +192,38 @@ async fn run_lobby(inbound: &mut SessionInbound) -> AppResult<SelectionOutcome> 
                                 dirty = true;
                             }
                             KeyCode::Enter => {
-                                if let Some(g) = inbound.games.get(selected_idx) {
-                                    selected = Some(g.clone());
-                                }
+                                selected = games.get(selected_idx).cloned();
                             }
                             KeyCode::Char(c) if c.is_ascii_digit() => {
                                 let idx = (c as u8 - b'1') as usize;
-                                if idx < inbound.games.len() {
-                                    selected = Some(inbound.games[idx].clone());
+                                if idx < games.len() {
+                                    selected = Some(games[idx].clone());
                                 }
                             }
                             _ => {}
                         }
                     }
-                    TerminalEvent::Resize(_, _) | TerminalEvent::Quit => {}
+                    TerminalEvent::Resize(_, _) | TerminalEvent::Mouse(_) | TerminalEvent::Quit => {}
                 }
             }
             change = resize_rx.recv() => {
-                let Some((w, h)) = change else { quit = true; continue; };
+                let Some((w, h)) = change else { break; };
                 current_width = w;
                 current_height = h;
                 dirty = true;
             }
             _ = draw_ticker.tick() => {
-                let warning = kick_warning_secs(last_input_at, Instant::now(), kick_after);
+                let now = Instant::now();
+                let warning = kick_warning_secs(last_input_at, now, HUB_LOBBY_IDLE, KICK_WARNING_REMAINING);
                 if warning.is_none()
-                    && Instant::now().saturating_duration_since(last_input_at) >= kick_after
+                    && now.saturating_duration_since(last_input_at) >= HUB_LOBBY_IDLE
                 {
-                    log::info!("Hub: kicking idle user {}", inbound.username);
+                    log::info!("Hub: kicking idle user {username}");
                     quit = true;
                     continue;
                 }
                 if dirty || warning.is_some() {
-                    let _ = tui.draw_lobby(&inbound.games, selected_idx, warning);
+                    let _ = tui.draw_lobby(games, selected_idx, warning, flash.as_deref());
                     let _ = tui.push_data().await;
                     dirty = false;
                 }
@@ -187,35 +233,11 @@ async fn run_lobby(inbound: &mut SessionInbound) -> AppResult<SelectionOutcome> 
 
     drop(tui);
 
-    Ok(SelectionOutcome {
+    LobbyOutcome {
         selected,
         data_rx,
         resize_rx,
         current_width,
         current_height,
-    })
-}
-
-/// Idle threshold the hub applies in its own lobby. Pick the min of the games'
-/// own thresholds (so the hub is at least as patient as the strictest game),
-/// floored at 30s, defaulted to 60s when the catalogue is empty.
-fn compute_lobby_kick(games: &[GameMetadata]) -> Duration {
-    let min_secs = games.iter().map(|g| g.inactivity_secs).min().unwrap_or(60);
-    Duration::from_secs(min_secs.max(30))
-}
-
-const KICK_WARNING_REMAINING: Duration = Duration::from_secs(10);
-
-fn kick_warning_secs(last_input_at: Instant, now: Instant, kick_after: Duration) -> Option<u32> {
-    let elapsed = now.saturating_duration_since(last_input_at);
-    if elapsed >= kick_after {
-        return None;
     }
-    let remaining = kick_after - elapsed;
-    if remaining >= KICK_WARNING_REMAINING {
-        return None;
-    }
-    let secs = remaining.as_secs() as u32 + u32::from(remaining.subsec_nanos() > 0);
-    Some(secs)
 }
-
