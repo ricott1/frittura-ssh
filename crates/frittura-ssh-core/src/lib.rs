@@ -3,7 +3,7 @@
 //!
 //! Downstream game crates pull this in via:
 //! ```toml
-//! sshhub = { git = "https://github.com/ricott1/sshhub", default-features = false }
+//! sshhub = { git = "https://github.com/ricott1/frittura-ssh", default-features = false }
 //! ```
 //! which selects only the `core` feature and excludes the hub binary deps.
 

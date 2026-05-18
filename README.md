@@ -11,7 +11,7 @@ SSH hub to pass on connection to other ssh games.
 The repo is a workspace with two crates: `frittura-ssh-hub` (the lobby binary) and `frittura-ssh-core` (the SSH/ratatui scaffolding I use across my games as a library). Add the core crate to your `Cargo.toml`:
 
 ```toml
-frittura-ssh-core = { git = "https://github.com/ricott1/sshhub" }
+frittura-ssh-core = { git = "https://github.com/ricott1/frittura-ssh" }
 ```
 
 and implement the `SshGame` trait:
