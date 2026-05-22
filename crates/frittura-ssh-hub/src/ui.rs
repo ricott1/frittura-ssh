@@ -68,7 +68,7 @@ pub fn render_lobby_menu(
 
     let body = chunks[5];
     let body_split =
-        Layout::horizontal([Constraint::Percentage(35), Constraint::Percentage(65)]).split(body);
+        Layout::horizontal([Constraint::Percentage(45), Constraint::Percentage(55)]).split(body);
     render_games_pane(frame, body_split[0], games, selected_idx);
     render_preview_pane(
         frame,

@@ -11,7 +11,7 @@ use std::time::Duration;
 
 /// Hub lobby is fixed-size so the same TUI works regardless of the user's
 /// real terminal dimensions.
-const HUB_SCREEN_SIZE: (u16, u16) = (120, 48);
+const HUB_SCREEN_SIZE: (u16, u16) = (132, 48);
 
 pub struct Tui {
     username: String,
