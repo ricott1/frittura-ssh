@@ -9,12 +9,14 @@ repository = "https://github.com/ricott1/frittura-ssh"
 [dependencies]
 frittura-ssh-core = { path = "../frittura-ssh-core" }
 anyhow.workspace = true
+blake3.workspace = true
 clap.workspace = true
 crossterm.workspace = true
 directories.workspace = true
 image.workspace = true
 log.workspace = true
 log4rs.workspace = true
+rand.workspace = true
 ratatui.workspace = true
 russh.workspace = true
 serde.workspace = true

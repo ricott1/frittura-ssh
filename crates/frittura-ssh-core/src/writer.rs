@@ -58,7 +58,7 @@ impl SshWriterProxy {
     /// Fire-and-forget flush; channel stays open. No-op once `send_and_close`
     /// has run, or if called outside an active tokio runtime (e.g. during
     /// `#[tokio::main]` shutdown when Drop fires after the runtime exits).
-    pub fn send_in_background(&mut self) {
+    fn send_in_background(&mut self) {
         if self.closed {
             return;
         }
@@ -81,7 +81,13 @@ impl SshWriterProxy {
     /// `DisableMouseCapture` is a safe no-op on sessions that never enabled
     /// mouse, so this universal cleanup works for all games.
     fn write_terminal_restore(&mut self) {
-        let _ = crossterm::execute!(self, LeaveAlternateScreen, DisableMouseCapture, Clear(ClearType::All), Show);
+        let _ = crossterm::execute!(
+            self,
+            LeaveAlternateScreen,
+            DisableMouseCapture,
+            Clear(ClearType::All),
+            Show
+        );
     }
 
     /// Restore the terminal, flush, EOF, close - all awaited so final bytes

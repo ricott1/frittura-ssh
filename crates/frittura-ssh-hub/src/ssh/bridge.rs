@@ -1,9 +1,10 @@
-use crate::config::GameMetadata;
+use crate::config::{AuthMethod, GameMetadata};
+use crate::identity::HubIdentity;
 use crate::AppResult;
 use anyhow::{anyhow, Context};
 use frittura_ssh_core::Credential;
 use russh::client::{self, Config, Handler, Msg};
-use russh::keys::PublicKey;
+use russh::keys::{HashAlg, PrivateKeyWithHashAlg, PublicKey};
 use russh::{Channel, ChannelMsg, Disconnect};
 use std::sync::Arc;
 use std::time::Duration;
@@ -15,6 +16,7 @@ pub struct BridgeArgs<'a> {
     pub username: String,
     pub credential: Credential,
     pub game: GameMetadata,
+    pub identity: Arc<HubIdentity>,
     pub term: String,
     pub width: u32,
     pub height: u32,
@@ -66,19 +68,36 @@ pub async fn run(args: BridgeArgs<'_>) -> Result<(), BridgeError> {
     .await
     .with_context(|| format!("connecting to {}:{}", args.game.host, args.game.port))?;
 
-    // Game servers we connect to all accept passwords. For pubkey users on
-    // the inbound side, we forward the openssh string form of the key as a
-    // password - games that hash credentials with a fingerprint won't find
-    // the save (pre-existing known limitation; documented in games.toml).
-    let credential_str = match args.credential {
-        Credential::Password(p) => p,
-        Credential::PublicKey(pk) => pk.to_string(),
+    let outbound_method = args
+        .game
+        .outbound_method(AuthMethod::for_credential(&args.credential));
+    let auth = match (outbound_method, &args.credential) {
+        (AuthMethod::Password, cred) => {
+            let pw = match cred {
+                Credential::Password(p) => p.clone(),
+                Credential::PublicKey(pk) => pk.to_string(),
+            };
+            session
+                .authenticate_password(args.username.as_str(), pw.as_str())
+                .await
+                .context("outbound authenticate_password failed")?
+        }
+        (AuthMethod::Publickey, Credential::PublicKey(pk)) => {
+            let fingerprint = pk.fingerprint(HashAlg::Sha256).to_string();
+            let derived = args
+                .identity
+                .derive_for(&args.game.key, &fingerprint)
+                .context("deriving hub identity key")?;
+            let key = PrivateKeyWithHashAlg::new(Arc::new(derived), None);
+            session
+                .authenticate_publickey(args.username.as_str(), key)
+                .await
+                .context("outbound authenticate_publickey failed")?
+        }
+        (AuthMethod::Publickey, Credential::Password(_)) => {
+            return Err(BridgeError::AuthRejected);
+        }
     };
-
-    let auth = session
-        .authenticate_password(args.username.as_str(), credential_str.as_str())
-        .await
-        .context("outbound authenticate_password failed")?;
     if !auth.success() {
         return Err(BridgeError::AuthRejected);
     }

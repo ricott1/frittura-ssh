@@ -1,8 +1,9 @@
-use crate::config::{GameMetadata, Preview};
+use crate::config::{AuthMethod, GameMetadata, Preview};
 use frittura_ssh_core::{
     convert_data_to_terminal_event, kick_warning_secs, Credential, SshWriterProxy, SshSession,
     TerminalEvent,
 };
+use crate::identity::HubIdentity;
 use crate::ssh::bridge::{self, BridgeError};
 use crate::tui::Tui;
 use crossterm::event::KeyCode;
@@ -15,7 +16,24 @@ const DRAW_TIME_STEP: Duration = Duration::from_millis(1000 / 30);
 const HUB_LOBBY_IDLE: Duration = Duration::from_secs(60);
 const KICK_WARNING_REMAINING: Duration = Duration::from_secs(10);
 
-pub async fn run_hub_session(games: Arc<Vec<GameMetadata>>, session: SshSession<Credential>) {
+fn unsupported_method_flash(game: &GameMetadata) -> String {
+    let methods = game
+        .auth
+        .as_deref()
+        .expect("flash only generated when game.auth restricts inbound");
+    let joined = methods
+        .iter()
+        .map(|m| m.as_str())
+        .collect::<Vec<_>>()
+        .join(" or ");
+    format!("{} requires {joined} authentication", game.name)
+}
+
+pub async fn run_hub_session(
+    games: Arc<Vec<GameMetadata>>,
+    identity: Arc<HubIdentity>,
+    session: SshSession<Credential>,
+) {
     let SshSession {
         username,
         auth: credential,
@@ -37,9 +55,18 @@ pub async fn run_hub_session(games: Arc<Vec<GameMetadata>>, session: SshSession<
     if let Some(name) = exec_command.as_deref() {
         match games.iter().find(|g| g.key == name) {
             Some(game) => {
+                if !game.accepts_inbound(AuthMethod::for_credential(&credential)) {
+                    log::info!(
+                        "Direct exec to {} refused: inbound auth method not accepted",
+                        game.key
+                    );
+                    let _ = handle.close(channel_id).await;
+                    return;
+                }
                 log::info!("User {username} requested direct exec -> {}", game.key);
                 let result = bridge_to(
                     game,
+                    &identity,
                     channel_id,
                     &handle,
                     &username,
@@ -102,6 +129,15 @@ pub async fn run_hub_session(games: Arc<Vec<GameMetadata>>, session: SshSession<
             return;
         };
 
+        if !game.accepts_inbound(AuthMethod::for_credential(&credential)) {
+            log::info!(
+                "User {username} selected '{}' but inbound auth method not accepted",
+                game.key
+            );
+            flash = Some(unsupported_method_flash(&game));
+            continue;
+        }
+
         log::info!(
             "User {username} selected '{}' -> bridging to {}:{}",
             game.key,
@@ -111,6 +147,7 @@ pub async fn run_hub_session(games: Arc<Vec<GameMetadata>>, session: SshSession<
 
         let bridge_result = bridge_to(
             &game,
+            &identity,
             channel_id,
             &handle,
             &username,
@@ -151,6 +188,7 @@ pub async fn run_hub_session(games: Arc<Vec<GameMetadata>>, session: SshSession<
 #[allow(clippy::too_many_arguments)]
 async fn bridge_to(
     game: &GameMetadata,
+    identity: &Arc<HubIdentity>,
     channel_id: russh::ChannelId,
     handle: &russh::server::Handle,
     username: &str,
@@ -167,6 +205,7 @@ async fn bridge_to(
         username: username.to_string(),
         credential: credential.clone(),
         game: game.clone(),
+        identity: identity.clone(),
         term: term.to_string(),
         width,
         height,

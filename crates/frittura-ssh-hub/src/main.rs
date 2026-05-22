@@ -1,7 +1,7 @@
 use clap::{ArgAction, Parser};
 use frittura_ssh_core::run_server;
 use frittura_ssh_hub::ssh::HubGame;
-use frittura_ssh_hub::{config, store_path, AppResult};
+use frittura_ssh_hub::{config, store_path, AppResult, HubIdentity};
 use log::LevelFilter;
 use log4rs::{
     append::file::FileAppender,
@@ -46,7 +46,10 @@ async fn main() -> AppResult<()> {
         games.len()
     );
 
-    let hub = Arc::new(HubGame::new(games));
+    let identity_path = store_path("hub-master.seed")?;
+    let identity = Arc::new(HubIdentity::load_or_generate(&identity_path)?);
+
+    let hub = Arc::new(HubGame::new(games, identity));
     run_server(hub, port).await?;
     Ok(())
 }

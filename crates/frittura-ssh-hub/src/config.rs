@@ -1,14 +1,66 @@
 use crate::utils::img_to_lines;
 use crate::AppResult;
 use anyhow::{anyhow, Context};
+use frittura_ssh_core::Credential;
 use image::{ImageBuffer, ImageReader, RgbaImage};
 use log::warn;
 use ratatui::text::Line;
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
 use std::fs::File;
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AuthMethod {
+    Publickey,
+    Password,
+}
+
+impl AuthMethod {
+    fn parse(token: &str) -> AppResult<Self> {
+        match token.trim().to_ascii_lowercase().as_str() {
+            "publickey" => Ok(Self::Publickey),
+            "password" => Ok(Self::Password),
+            other => Err(anyhow!("unknown auth method '{other}'")),
+        }
+    }
+
+    pub fn for_credential(credential: &Credential) -> Self {
+        match credential {
+            Credential::Password(_) => Self::Password,
+            Credential::PublicKey(_) => Self::Publickey,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Publickey => "publickey",
+            Self::Password => "password",
+        }
+    }
+}
+
+fn deserialize_auth_list<'de, D>(de: D) -> Result<Option<Vec<AuthMethod>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    use serde::de::Error;
+    let raw: Option<String> = Option::deserialize(de)?;
+    let Some(raw) = raw else { return Ok(None) };
+    let mut out = Vec::new();
+    for token in raw.split(',') {
+        if token.trim().is_empty() {
+            continue;
+        }
+        out.push(AuthMethod::parse(token).map_err(D::Error::custom)?);
+    }
+    if out.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(out))
+}
 
 /// Browsers historically clamp 0-delay GIF frames to ~100ms; we follow suit so
 /// busted GIFs don't render at infinite FPS.
@@ -43,6 +95,25 @@ pub struct GameMetadata {
     pub image: Option<String>,
     #[serde(skip)]
     pub preview: Option<Preview>,
+    #[serde(default, deserialize_with = "deserialize_auth_list")]
+    pub auth: Option<Vec<AuthMethod>>,
+}
+
+impl GameMetadata {
+    pub fn accepts_inbound(&self, method: AuthMethod) -> bool {
+        match &self.auth {
+            None => true,
+            Some(list) => list.contains(&method),
+        }
+    }
+
+    pub fn outbound_method(&self, inbound: AuthMethod) -> AuthMethod {
+        match &self.auth {
+            None => AuthMethod::Password,
+            Some(list) if list.contains(&inbound) => inbound,
+            Some(list) => list[0],
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
